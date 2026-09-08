@@ -9,13 +9,20 @@ Architecture: Input -> LSTM -> [Feature Attention, Temporal Attention]
 This differs from feature_first / lstm_first: those apply feature- and
 temporal-attention SEQUENTIALLY (one feeding into the other). Here both
 run in parallel from the same LSTM output and get combined by a fusion
-stage - either a fixed average, or a learned gate that decides per
-example/per channel how much to trust each attention view.
+stage. Three fusion modes:
+  - "average": fixed 50/50 blend
+  - "adaptive": a learned gate (extra parameters) that decides the blend
+    from the content of the two attention vectors
+  - "confidence": a PARAMETER-FREE gate derived from how peaked
+    (confident) each attention mechanism's own distribution is, via
+    normalized entropy - trusts whichever branch is more "sure" of
+    itself, with no extra learned weights
 
 Run from the weather-forecast/ project root:
     python train_parallel_fusion_attention.py
     python train_parallel_fusion_attention.py --fusion average --seed 7
     python train_parallel_fusion_attention.py --fusion adaptive --lr 0.0005
+    python train_parallel_fusion_attention.py --fusion confidence --seed 7
 
 Expects data/20years_dataset_mandalay.csv relative to where you run this from.
 Saves the trained model to models/parallel_fusion_<fusion>_seed<seed>.pt
@@ -37,7 +44,7 @@ from torch.utils.data import DataLoader, TensorDataset
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data_path", type=str, default="data/20years_dataset_mandalay.csv")
-    p.add_argument("--fusion", type=str, choices=["adaptive", "average"], default="adaptive")
+    p.add_argument("--fusion", type=str, choices=["adaptive", "average", "confidence"], default="adaptive")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--patience", type=int, default=15)
@@ -166,9 +173,21 @@ class TemporalAttention(nn.Module):
 
 # -----------------------------------------------------------------
 # Fusion: combine the feature-attention and temporal-attention
-# vectors. "average" is a fixed 50/50 blend. "adaptive" is a learned
-# gate, zero-initialized so it starts at sigmoid(0) = 0.5 (an even
-# blend) and only shifts away from that if the data supports it.
+# vectors. Three modes:
+#
+#   "average"    - fixed 50/50 blend
+#   "adaptive"   - a learned gate (zero-initialized so it starts at
+#                  sigmoid(0) = 0.5) that decides the blend from the
+#                  CONTENT of v_feat/v_temp - a small extra linear
+#                  layer with its own parameters
+#   "confidence" - a PARAMETER-FREE gate derived from how peaked
+#                  (confident) each attention mechanism's own weight
+#                  distribution is, via normalized entropy. Low
+#                  entropy = sharp, confident attention = trusted
+#                  more. Unlike "adaptive", this doesn't learn what
+#                  to trust from a black box - it's a direct,
+#                  interpretable function of the attention weights
+#                  themselves, and adds zero parameters.
 # -----------------------------------------------------------------
 class AdaptiveFusion(nn.Module):
     def __init__(self, hidden_dim):
@@ -183,9 +202,49 @@ class AdaptiveFusion(nn.Module):
         return fused, gate
 
 
+def confidence_fusion(v_feat, v_temp, feat_weights, temp_weights):
+    """Parameter-free fusion: blend weight comes from the normalized
+    entropy of each attention mechanism's own distribution, not from a
+    learned function of the vectors' content.
+
+    feat_weights: (batch, seq_len, hidden_dim) - a softmax distribution
+        over hidden_dim, independently at each timestep.
+    temp_weights: (batch, seq_len, 1) - a softmax distribution over
+        seq_len (one distribution per example).
+
+    The two live on different scales (max possible entropy is log(hidden_dim)
+    vs log(seq_len)), so each is normalized by its own maximum before
+    comparing - otherwise the branch with more classes would look
+    artificially less "confident" regardless of actual sharpness.
+    """
+    eps = 1e-8
+    hidden_dim = feat_weights.shape[-1]
+    seq_len = temp_weights.shape[1]
+
+    # Feature attention: one distribution per timestep: average entropy
+    # across the window into one scalar per example.
+    feat_entropy = -(feat_weights * torch.log(feat_weights + eps)).sum(dim=-1)  # (batch, seq_len)
+    feat_entropy = feat_entropy.mean(dim=1) / np.log(hidden_dim)  # (batch,) in [0, 1]
+
+    # Temporal attention: one distribution per example already.
+    temp_w = temp_weights.squeeze(-1)  # (batch, seq_len)
+    temp_entropy = -(temp_w * torch.log(temp_w + eps)).sum(dim=1) / np.log(seq_len)  # (batch,) in [0, 1]
+
+    # Lower entropy = more confident = more weight. Softmax over the
+    # negated entropies turns "which branch is more confident" into a
+    # normalized blend weight.
+    gate = torch.softmax(torch.stack([-feat_entropy, -temp_entropy], dim=-1), dim=-1)  # (batch, 2)
+    g_feat = gate[:, 0:1]  # (batch, 1), broadcasts over hidden_dim
+
+    fused = g_feat * v_feat + (1 - g_feat) * v_temp
+    return fused, g_feat
+
+
 class ParallelFusionDualAttentionLSTM(nn.Module):
     def __init__(self, n_features, lstm_units=64, temp_att_units=32, fusion="adaptive"):
         super().__init__()
+        if fusion not in ("average", "adaptive", "confidence"):
+            raise ValueError(f"fusion must be 'average', 'adaptive', or 'confidence', got {fusion!r}")
         self.fusion_mode = fusion
         self.lstm = nn.LSTM(n_features, lstm_units, batch_first=True)
         self.dropout1 = nn.Dropout(0.2)
@@ -205,6 +264,8 @@ class ParallelFusionDualAttentionLSTM(nn.Module):
 
         if self.fusion_mode == "adaptive":
             fused, gate = self.fusion(v_feat, v_temp)
+        elif self.fusion_mode == "confidence":
+            fused, gate = confidence_fusion(v_feat, v_temp, feat_weights, temp_weights)
         else:
             fused = (v_feat + v_temp) / 2
             gate = None
