@@ -1,0 +1,10 @@
+# On Windows with an NVIDIA GPU, install PyTorch with CUDA support FIRST
+# using the command from https://pytorch.org/get-started/locally/ (select
+# your CUDA version) - e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu126
+# Only after that, install the rest:
+#   pip install -r requirements.txt
+torch
+pandas
+numpy
+scikit-learn
