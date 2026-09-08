@@ -20,3 +20,8 @@
 {"model": "parallel_fusion_average_torch", "seed": 3, "mae": 0.6107206344604492, "rmse": 0.8128830300324142, "naive_mae": 0.6743367910385132}
 {"model": "parallel_fusion_average_torch", "seed": 4, "mae": 0.6176013946533203, "rmse": 0.8167503033518629, "naive_mae": 0.6743367910385132}
 {"model": "parallel_fusion_average_torch", "seed": 5, "mae": 0.6112085580825806, "rmse": 0.8166556456529354, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_confidence_torch", "seed": 1, "mae": 0.6141729354858398, "rmse": 0.8136710384399392, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_confidence_torch", "seed": 2, "mae": 0.6149975657463074, "rmse": 0.8156903792445852, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_confidence_torch", "seed": 3, "mae": 0.6168310642242432, "rmse": 0.8156268035751805, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_confidence_torch", "seed": 4, "mae": 0.622599720954895, "rmse": 0.8240880274950604, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_confidence_torch", "seed": 5, "mae": 0.6192522644996643, "rmse": 0.8267779640933837, "naive_mae": 0.6743367910385132}
