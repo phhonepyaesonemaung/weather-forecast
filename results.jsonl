@@ -25,3 +25,8 @@
 {"model": "parallel_fusion_confidence_torch", "seed": 3, "mae": 0.6168310642242432, "rmse": 0.8156268035751805, "naive_mae": 0.6743367910385132}
 {"model": "parallel_fusion_confidence_torch", "seed": 4, "mae": 0.622599720954895, "rmse": 0.8240880274950604, "naive_mae": 0.6743367910385132}
 {"model": "parallel_fusion_confidence_torch", "seed": 5, "mae": 0.6192522644996643, "rmse": 0.8267779640933837, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_global_scalar_torch", "seed": 1, "mae": 0.6191197037696838, "rmse": 0.8177448232166772, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_global_scalar_torch", "seed": 2, "mae": 0.6068508625030518, "rmse": 0.8117391985758212, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_global_scalar_torch", "seed": 3, "mae": 0.6248095631599426, "rmse": 0.828010191246561, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_global_scalar_torch", "seed": 4, "mae": 0.65117347240448, "rmse": 0.847825556428503, "naive_mae": 0.6743367910385132}
+{"model": "parallel_fusion_global_scalar_torch", "seed": 5, "mae": 0.613727867603302, "rmse": 0.8141970883805818, "naive_mae": 0.6743367910385132}
