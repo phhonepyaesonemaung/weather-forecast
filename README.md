@@ -11,16 +11,31 @@ All models: PyTorch.
 | Naive persistence | — | 0.674 | — | — |
 | Dual-Attention (feature-first) | Input → FeatAttn → LSTM → TempAttn → Dense | 0.700 ± 0.167 (bimodal, see below) | 0.926 ± 0.218 | No on average |
 | Dual-Attention (LSTM-first) | Input → LSTM → FeatAttn → TempAttn → Dense | 0.659 ± 0.016 | 0.867 ± 0.021 | Yes |
-| Parallel Fusion (adaptive) | Input → LSTM → [FeatAttn, TempAttn] → learned gate → Dense | 0.638 ± 0.022 | 0.842 ± 0.027 | Yes, 4/5 seeds |
-| **Parallel Fusion (average)** | Input → LSTM → [FeatAttn, TempAttn] → 50/50 avg → Dense | **0.613 ± 0.002** | **0.815 ± 0.002** | **Yes, all 5 seeds** |
+| Parallel Fusion (adaptive, 128 params) | Input → LSTM → [FeatAttn, TempAttn] → learned gate → Dense | 0.638 ± 0.022 | 0.842 ± 0.027 | Yes, 4/5 seeds |
+| Parallel Fusion (confidence, 0 learned params) | Input → LSTM → [FeatAttn, TempAttn] → entropy-based gate → Dense | 0.618 ± 0.003 | — | Yes, 5/5 seeds |
+| Parallel Fusion (global_scalar, 1 param) | Input → LSTM → [FeatAttn, TempAttn] → single learned ratio → Dense | *not yet run* | — | — |
+| **Parallel Fusion (average, 0 params)** | Input → LSTM → [FeatAttn, TempAttn] → 50/50 avg → Dense | **0.613 ± 0.002** | **0.815 ± 0.002** | **Yes, all 5 seeds** |
 
 **Parallel fusion (average) is the best model so far** — lowest MAE and RMSE,
 and by far the tightest cross-seed variance of anything tried, meaning the
 improvement is structural, not a lucky seed. Notably, the learned adaptive
-gate *underperforms* the simple fixed average — plausible explanation: with
-only ~6,500 training sequences, there isn't enough data to reliably learn a
-good per-example gating function, so the extra parameters mostly add noise.
-This is reported honestly rather than only showing the better variant.
+gate (128 parameters) *underperforms* both the simple fixed average (0
+parameters) and the entropy-based confidence gate (0 learned parameters) -
+plausible explanation: with only ~6,500 training sequences, there isn't
+enough data to reliably learn a good per-example gating function, so the
+extra parameters mostly add noise. This is reported honestly rather than
+only showing the better variant.
+
+**`global_scalar` is a new fourth fusion mode added to test this directly**:
+a single learned mixing ratio (1 parameter, shared across every example),
+sitting deliberately between `average` (0 params) and `adaptive` (128
+params) on the complexity spectrum. If it performs close to `average`, that
+supports the theory that per-example gating is what causes `adaptive` to
+overfit - a single global ratio would then be the honest answer to "how
+much adaptivity does this data actually support." Implemented and
+smoke-tested (verified it has exactly 1 parameter, starts at exactly 0.5,
+and moves meaningfully after a few training steps) - not yet run for a
+real multi-seed comparison.
 
 This is also a meaningfully different result from the earlier TensorFlow/
 Keras version of the two sequential architectures (see
@@ -45,26 +60,28 @@ Parallel fusion (train_parallel_fusion_attention.py):
 
 Parallel fusion computes both attention mechanisms **independently** from
 the same LSTM output (neither feeds into the other), then combines them via
-one of three fusion modes:
+one of four fusion modes, spanning a range of learned complexity:
 
-- `average` — fixed 50/50 blend. **Best result so far.**
-- `adaptive` — a learned gate `g = sigmoid(W[v_feat; v_temp] + b)`, deciding
-  the blend from the *content* of the two attention vectors. Adds
-  parameters; underperformed `average` in testing.
-- `confidence` — a **parameter-free** gate derived from the normalized
+- `average` (0 params) — fixed 50/50 blend. **Best result so far.**
+- `global_scalar` (1 param) — a single learned mixing ratio
+  `alpha = sigmoid(w)`, shared across every example and every hidden
+  channel. Sits deliberately between `average` and `adaptive` in
+  complexity - tests whether any global deviation from 50/50 helps,
+  without the overfitting risk of a full per-example gate.
+- `adaptive` (128 params) — a learned gate `g = sigmoid(W[v_feat; v_temp] + b)`,
+  deciding the blend from the *content* of the two attention vectors, per
+  example and per hidden channel. Underperformed `average` in testing.
+- `confidence` (0 learned params) — a gate derived from the normalized
   entropy of each attention mechanism's own weight distribution: whichever
   branch is more "confident" (sharper, lower-entropy attention) gets more
   weight. Both entropies are normalized by their own max possible value
   (`log(hidden_dim)` for feature attention, `log(seq_len)` for temporal
   attention) before comparing, since they operate over different numbers of
-  classes and raw entropy values aren't otherwise comparable. Implemented
-  and smoke-tested (verified the gate starts at 0.5 with zero-init
-  attention, and moves away from 0.5 once attention sharpens through
-  training) — **not yet run for a real multi-seed comparison.**
+  classes and raw entropy values aren't otherwise comparable.
 
-All attention layers and the adaptive fusion gate are zero-initialized, so
-training starts from a stable, near-uniform state rather than an arbitrary
-random skew.
+All attention layers and the learned fusion gates are zero-initialized, so
+training starts from a stable, near-uniform state (the same 50/50 point
+`average` uses) rather than an arbitrary random skew.
 
 ## On novelty (read before writing this up as a paper)
 
@@ -100,6 +117,7 @@ CUDA-enabled PyTorch build on Windows.
 python train_feature_first_attention_torch.py --seed 42
 python train_lstm_first_attention_torch.py --seed 42
 python train_parallel_fusion_attention.py --fusion average --seed 42
+python train_parallel_fusion_attention.py --fusion global_scalar --seed 42
 python train_parallel_fusion_attention.py --fusion adaptive --seed 42
 python train_parallel_fusion_attention.py --fusion confidence --seed 42
 ```
@@ -112,8 +130,10 @@ Each run appends one line to `results.jsonl`.
 
 ## Next steps
 
-1. Run `train_parallel_fusion_attention.py --fusion confidence` for a real
-   5-seed comparison (only smoke-tested so far)
+1. Run `train_parallel_fusion_attention.py --fusion global_scalar` for a
+   real 5-seed comparison (only smoke-tested so far) - if it lands close to
+   `average`, that's evidence per-example gating is what causes `adaptive`
+   to overfit, not adaptivity itself
 2. Re-run feature-first seed 5 (or all 5 seeds) with zero-initialized
    attention weights to check whether it resolves the bimodal instability
 3. If `confidence` performs well, inspect its gate values against actual

@@ -9,20 +9,22 @@ Architecture: Input -> LSTM -> [Feature Attention, Temporal Attention]
 This differs from feature_first / lstm_first: those apply feature- and
 temporal-attention SEQUENTIALLY (one feeding into the other). Here both
 run in parallel from the same LSTM output and get combined by a fusion
-stage. Three fusion modes:
-  - "average": fixed 50/50 blend
-  - "adaptive": a learned gate (extra parameters) that decides the blend
-    from the content of the two attention vectors
-  - "confidence": a PARAMETER-FREE gate derived from how peaked
+stage. Four fusion modes, spanning a range of learned complexity:
+  - "average" (0 params): fixed 50/50 blend
+  - "global_scalar" (1 param): a single learned mixing ratio, shared by
+    every example - the middle ground between average and adaptive
+  - "adaptive" (128 params): a learned gate that decides the blend from
+    the content of the two attention vectors, per example and per channel
+  - "confidence" (0 learned params): a gate derived from how peaked
     (confident) each attention mechanism's own distribution is, via
-    normalized entropy - trusts whichever branch is more "sure" of
-    itself, with no extra learned weights
+    normalized entropy
 
 Run from the weather-forecast/ project root:
     python train_parallel_fusion_attention.py
     python train_parallel_fusion_attention.py --fusion average --seed 7
     python train_parallel_fusion_attention.py --fusion adaptive --lr 0.0005
     python train_parallel_fusion_attention.py --fusion confidence --seed 7
+    python train_parallel_fusion_attention.py --fusion global_scalar --seed 7
 
 Expects data/20years_dataset_mandalay.csv relative to where you run this from.
 Saves the trained model to models/parallel_fusion_<fusion>_seed<seed>.pt
@@ -44,7 +46,7 @@ from torch.utils.data import DataLoader, TensorDataset
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data_path", type=str, default="data/20years_dataset_mandalay.csv")
-    p.add_argument("--fusion", type=str, choices=["adaptive", "average", "confidence"], default="adaptive")
+    p.add_argument("--fusion", type=str, choices=["adaptive", "average", "confidence", "global_scalar"], default="adaptive")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--patience", type=int, default=15)
@@ -173,21 +175,25 @@ class TemporalAttention(nn.Module):
 
 # -----------------------------------------------------------------
 # Fusion: combine the feature-attention and temporal-attention
-# vectors. Three modes:
+# vectors. Four modes:
 #
-#   "average"    - fixed 50/50 blend
-#   "adaptive"   - a learned gate (zero-initialized so it starts at
-#                  sigmoid(0) = 0.5) that decides the blend from the
-#                  CONTENT of v_feat/v_temp - a small extra linear
-#                  layer with its own parameters
-#   "confidence" - a PARAMETER-FREE gate derived from how peaked
-#                  (confident) each attention mechanism's own weight
-#                  distribution is, via normalized entropy. Low
-#                  entropy = sharp, confident attention = trusted
-#                  more. Unlike "adaptive", this doesn't learn what
-#                  to trust from a black box - it's a direct,
-#                  interpretable function of the attention weights
-#                  themselves, and adds zero parameters.
+#   "average"       - fixed 50/50 blend. 0 learned parameters.
+#   "global_scalar" - ONE learned scalar mixing weight, shared across
+#                      every example and every hidden channel. The
+#                      middle ground between "average" (0 params) and
+#                      "adaptive" (a full 128-parameter gating network):
+#                      does the data support ANY global deviation from
+#                      50/50, without the overfitting risk of letting
+#                      the gate vary per example? 1 learned parameter.
+#   "adaptive"      - a learned gate (zero-initialized so it starts at
+#                      sigmoid(0) = 0.5) that decides the blend from the
+#                      CONTENT of v_feat/v_temp, per example and per
+#                      hidden channel - a full Linear layer, 128 params.
+#   "confidence"    - a PARAMETER-FREE gate derived from how peaked
+#                      (confident) each attention mechanism's own weight
+#                      distribution is, via normalized entropy. Low
+#                      entropy = sharp, confident attention = trusted
+#                      more.
 # -----------------------------------------------------------------
 class AdaptiveFusion(nn.Module):
     def __init__(self, hidden_dim):
@@ -200,6 +206,23 @@ class AdaptiveFusion(nn.Module):
         gate = torch.sigmoid(self.gate(torch.cat([v_feat, v_temp], dim=-1)))
         fused = gate * v_feat + (1 - gate) * v_temp
         return fused, gate
+
+
+class GlobalScalarFusion(nn.Module):
+    """A single learned scalar mixing weight alpha = sigmoid(w), shared by
+    every example and every hidden channel - unlike AdaptiveFusion, alpha
+    does not depend on the input at all, so there is exactly one learned
+    parameter in this whole module. Zero-initialized so it starts at the
+    same 50/50 blend as "average" and only drifts away from that if the
+    data supports a consistently better global ratio."""
+    def __init__(self):
+        super().__init__()
+        self.raw_alpha = nn.Parameter(torch.zeros(1))
+
+    def forward(self, v_feat, v_temp):
+        alpha = torch.sigmoid(self.raw_alpha)
+        fused = alpha * v_feat + (1 - alpha) * v_temp
+        return fused, alpha
 
 
 def confidence_fusion(v_feat, v_temp, feat_weights, temp_weights):
@@ -243,14 +266,20 @@ def confidence_fusion(v_feat, v_temp, feat_weights, temp_weights):
 class ParallelFusionDualAttentionLSTM(nn.Module):
     def __init__(self, n_features, lstm_units=64, temp_att_units=32, fusion="adaptive"):
         super().__init__()
-        if fusion not in ("average", "adaptive", "confidence"):
-            raise ValueError(f"fusion must be 'average', 'adaptive', or 'confidence', got {fusion!r}")
+        valid_fusions = ("average", "global_scalar", "adaptive", "confidence")
+        if fusion not in valid_fusions:
+            raise ValueError(f"fusion must be one of {valid_fusions}, got {fusion!r}")
         self.fusion_mode = fusion
         self.lstm = nn.LSTM(n_features, lstm_units, batch_first=True)
         self.dropout1 = nn.Dropout(0.2)
         self.feature_attention = FeatureAttention(lstm_units)
         self.temporal_attention = TemporalAttention(lstm_units, temp_att_units)
-        self.fusion = AdaptiveFusion(lstm_units) if fusion == "adaptive" else None
+        if fusion == "adaptive":
+            self.fusion = AdaptiveFusion(lstm_units)
+        elif fusion == "global_scalar":
+            self.fusion = GlobalScalarFusion()
+        else:
+            self.fusion = None
         self.dense1 = nn.Linear(lstm_units, 16)
         self.dropout2 = nn.Dropout(0.2)
         self.output_layer = nn.Linear(16, 1)
@@ -262,7 +291,7 @@ class ParallelFusionDualAttentionLSTM(nn.Module):
         v_feat, feat_weights = self.feature_attention(lstm_out)
         v_temp, temp_weights = self.temporal_attention(lstm_out)
 
-        if self.fusion_mode == "adaptive":
+        if self.fusion_mode in ("adaptive", "global_scalar"):
             fused, gate = self.fusion(v_feat, v_temp)
         elif self.fusion_mode == "confidence":
             fused, gate = confidence_fusion(v_feat, v_temp, feat_weights, temp_weights)
