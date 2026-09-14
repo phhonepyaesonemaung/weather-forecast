@@ -4,6 +4,18 @@ Forecasting next-day mean temperature for Mandalay, Myanmar using 20 years
 (2006-2026) of hourly ERA5 reanalysis data, aggregated to daily resolution.
 All models: PyTorch.
 
+## New scale-correction experiments
+
+See [CONDITIONED_FUSION.md](CONDITIONED_FUSION.md) for the six controlled
+comparisons, including the five-parameter seasonal/weather gate, chronological
+splits, monthly metrics, and paired date-block bootstrap analysis.
+These are hypotheses to test, not demonstrated improvements. The historical
+interpretation below predates the scale-imbalance finding: uniform feature
+attention produces a context 1/64 of the temporal context. Seed consistency
+alone does not establish a structural improvement or explain adaptive-gate
+performance. Global-scalar runs are already present in results.jsonl; statements
+below saying they have not been run are historical.
+
 ## Results (5-seed evaluation, real committed runs)
 
 | Model | Order | Mean MAE ± Std (°C) | Mean RMSE ± Std (°C) | Beats naive? |
@@ -11,7 +23,7 @@ All models: PyTorch.
 | Naive persistence | — | 0.674 | — | — |
 | Dual-Attention (feature-first) | Input → FeatAttn → LSTM → TempAttn → Dense | 0.700 ± 0.167 (bimodal, see below) | 0.926 ± 0.218 | No on average |
 | Dual-Attention (LSTM-first) | Input → LSTM → FeatAttn → TempAttn → Dense | 0.659 ± 0.016 | 0.867 ± 0.021 | Yes |
-| Parallel Fusion (adaptive, 128 params) | Input → LSTM → [FeatAttn, TempAttn] → learned gate → Dense | 0.638 ± 0.022 | 0.842 ± 0.027 | Yes, 4/5 seeds |
+| Parallel Fusion (adaptive, 8,256 params) | Input → LSTM → [FeatAttn, TempAttn] → learned gate → Dense | 0.638 ± 0.022 | 0.842 ± 0.027 | Yes, 4/5 seeds |
 | Parallel Fusion (confidence, 0 learned params) | Input → LSTM → [FeatAttn, TempAttn] → entropy-based gate → Dense | 0.618 ± 0.003 | — | Yes, 5/5 seeds |
 | Parallel Fusion (global_scalar, 1 param) | Input → LSTM → [FeatAttn, TempAttn] → single learned ratio → Dense | *not yet run* | — | — |
 | **Parallel Fusion (average, 0 params)** | Input → LSTM → [FeatAttn, TempAttn] → 50/50 avg → Dense | **0.613 ± 0.002** | **0.815 ± 0.002** | **Yes, all 5 seeds** |
@@ -19,7 +31,7 @@ All models: PyTorch.
 **Parallel fusion (average) is the best model so far** — lowest MAE and RMSE,
 and by far the tightest cross-seed variance of anything tried, meaning the
 improvement is structural, not a lucky seed. Notably, the learned adaptive
-gate (128 parameters) *underperforms* both the simple fixed average (0
+gate (8,256 parameters) *underperforms* both the simple fixed average (0
 parameters) and the entropy-based confidence gate (0 learned parameters) -
 plausible explanation: with only ~6,500 training sequences, there isn't
 enough data to reliably learn a good per-example gating function, so the
@@ -68,7 +80,7 @@ one of four fusion modes, spanning a range of learned complexity:
   channel. Sits deliberately between `average` and `adaptive` in
   complexity - tests whether any global deviation from 50/50 helps,
   without the overfitting risk of a full per-example gate.
-- `adaptive` (128 params) — a learned gate `g = sigmoid(W[v_feat; v_temp] + b)`,
+- `adaptive` (8,256 params) — a learned gate `g = sigmoid(W[v_feat; v_temp] + b)`,
   deciding the blend from the *content* of the two attention vectors, per
   example and per hidden channel. Underperformed `average` in testing.
 - `confidence` (0 learned params) — a gate derived from the normalized

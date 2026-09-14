@@ -13,7 +13,7 @@ stage. Four fusion modes, spanning a range of learned complexity:
   - "average" (0 params): fixed 50/50 blend
   - "global_scalar" (1 param): a single learned mixing ratio, shared by
     every example - the middle ground between average and adaptive
-  - "adaptive" (128 params): a learned gate that decides the blend from
+  - "adaptive" (8,256 params): a learned gate that decides the blend from
     the content of the two attention vectors, per example and per channel
   - "confidence" (0 learned params): a gate derived from how peaked
     (confident) each attention mechanism's own distribution is, via
@@ -59,7 +59,7 @@ def parse_args():
     return p.parse_args()
 
 
-def load_and_prepare_data(data_path):
+def load_and_prepare_data(data_path, return_daily=False):
     df = pd.read_csv(data_path)
     df = df.rename(columns={
         "valid_time": "date", "u10": "wind_u_10m", "v10": "wind_v_10m",
@@ -106,6 +106,9 @@ def load_and_prepare_data(data_path):
         "humidity_lag_1", "pressure_lag_1", "rain_lag_1",
     ]
     target_column = "temperature_c"
+
+    if return_daily:
+        return daily, feature_columns
 
     train = daily.loc[:"2021-12-31"]
     val = daily.loc["2022-01-01":"2023-12-31"]
@@ -181,14 +184,14 @@ class TemporalAttention(nn.Module):
 #   "global_scalar" - ONE learned scalar mixing weight, shared across
 #                      every example and every hidden channel. The
 #                      middle ground between "average" (0 params) and
-#                      "adaptive" (a full 128-parameter gating network):
+#                      "adaptive" (a full 8,256-parameter gating network):
 #                      does the data support ANY global deviation from
 #                      50/50, without the overfitting risk of letting
 #                      the gate vary per example? 1 learned parameter.
 #   "adaptive"      - a learned gate (zero-initialized so it starts at
 #                      sigmoid(0) = 0.5) that decides the blend from the
 #                      CONTENT of v_feat/v_temp, per example and per
-#                      hidden channel - a full Linear layer, 128 params.
+#                      hidden channel - a full Linear layer, 8,256 params.
 #   "confidence"    - a PARAMETER-FREE gate derived from how peaked
 #                      (confident) each attention mechanism's own weight
 #                      distribution is, via normalized entropy. Low
